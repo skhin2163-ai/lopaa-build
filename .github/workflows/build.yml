@@ -1,0 +1,89 @@
+name: Build Flutter APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag'
+        required: true
+        type: string
+      build_type:
+        description: 'debug / release'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Download project ZIP from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p project
+          gh release download "${{ inputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.zip" \
+            --dir project/
+          ls -la project/
+
+      - name: Extract project
+        run: |
+          cd project
+          ZIP_FILE=$(ls *.zip | head -n 1)
+          unzip -q "$ZIP_FILE" -d extracted
+          if [ -f "extracted/pubspec.yaml" ]; then
+            echo "PROJECT_DIR=project/extracted" >> $GITHUB_ENV
+          else
+            PUBSPEC_PATH=$(find extracted -name "pubspec.yaml" -type f | head -n 1)
+            if [ -z "$PUBSPEC_PATH" ]; then
+              echo "pubspec.yaml tidak ditemukan!"
+              exit 1
+            fi
+            PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+            echo "PROJECT_DIR=project/$PROJECT_DIR" >> $GITHUB_ENV
+          fi
+
+      - name: Flutter pub get
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release --split-per-abi || flutter build apk --release
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-build
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+            ${{ env.PROJECT_DIR }}/build/app/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 3
